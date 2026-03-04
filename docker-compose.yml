@@ -1,0 +1,40 @@
+services:
+  orbit:
+    build: .
+    container_name: orbit-crm
+    ports:
+      - "3000:3000"
+    volumes:
+      - orbit-data:/app/data
+    env_file:
+      - .env.local
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    networks:
+      - orbit-net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: orbit-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - orbit
+    restart: unless-stopped
+    networks:
+      - orbit-net
+
+volumes:
+  orbit-data:
+  caddy-data:
+  caddy-config:
+
+
+networks:
+  orbit-net:
