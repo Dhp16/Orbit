@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { Contact, StorageData } from '@/types';
+import { Contact, Entry, StorageData } from '@/types';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const FILE_PATH = path.join(DATA_DIR, 'contacts.json');
@@ -17,10 +17,14 @@ async function readData(): Promise<StorageData> {
     await ensureDataDir();
     try {
         const data = await fs.readFile(FILE_PATH, 'utf-8');
-        return JSON.parse(data);
+        const parsed = JSON.parse(data);
+        // Ensure both arrays exist for backward compat
+        return {
+            contacts: parsed.contacts ?? [],
+            entries: parsed.entries ?? [],
+        };
     } catch (error) {
-        // If file doesn't exist or is invalid, return empty state
-        return { contacts: [] };
+        return { contacts: [], entries: [] };
     }
 }
 
@@ -30,6 +34,7 @@ async function writeData(data: StorageData): Promise<void> {
 }
 
 export const storage = {
+    // ── Contacts ──────────────────────────────────────────
     getContacts: async (): Promise<Contact[]> => {
         const data = await readData();
         return data.contacts;
@@ -59,19 +64,28 @@ export const storage = {
         await writeData(data);
     },
 
-    // Helper to add note directly
-    addNote: async (contactId: string, content: string): Promise<void> => {
+    // ── Entries ───────────────────────────────────────────
+    getEntries: async (): Promise<Entry[]> => {
         const data = await readData();
-        const contact = data.contacts.find(c => c.id === contactId);
-        if (contact) {
-            const newNote = {
-                id: crypto.randomUUID(),
-                content,
-                createdAt: new Date().toISOString()
-            };
-            contact.notes.unshift(newNote); // Newest first
-            contact.updatedAt = new Date().toISOString();
-            await writeData(data);
-        }
-    }
+        return data.entries;
+    },
+
+    addEntry: async (content: string, contactIds: string[], tags: string[]): Promise<void> => {
+        const data = await readData();
+        const newEntry: Entry = {
+            id: crypto.randomUUID(),
+            content,
+            contactIds,
+            tags,
+            createdAt: new Date().toISOString(),
+        };
+        data.entries.unshift(newEntry); // Newest first
+        await writeData(data);
+    },
+
+    deleteEntry: async (id: string): Promise<void> => {
+        const data = await readData();
+        data.entries = data.entries.filter((e) => e.id !== id);
+        await writeData(data);
+    },
 };
