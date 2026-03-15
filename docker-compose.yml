@@ -14,26 +14,18 @@ services:
     networks:
       - orbit-net
 
-  caddy:
-    image: caddy:2-alpine
-    container_name: orbit-caddy
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - orbit
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: orbit-tunnel
     restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     networks:
       - orbit-net
 
 volumes:
   orbit-data:
-  caddy-data:
-  caddy-config:
 
 
 networks:
