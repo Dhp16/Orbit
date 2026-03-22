@@ -60,7 +60,7 @@ export default async function DashboardPage() {
                             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
                                 <span className="text-purple-400">✦</span> New Entry
                             </h2>
-                            <NewEntryForm contacts={contacts} />
+                            <NewEntryForm contacts={contacts} allTags={[...new Set(entries.flatMap(e => e.tags))].sort()} />
                         </div>
 
                         {/* New Contact Form */}
