@@ -7,21 +7,23 @@ import { auth } from '@/auth';
 
 const skipAuth = process.env.SKIP_AUTH === "true";
 
-async function checkAuth() {
-    if (skipAuth) return true;
+async function checkAuth(): Promise<string | null> {
+    if (skipAuth) return "local";
     const session = await auth();
-    return !!session;
+    return session?.user?.email || null;
 }
 
 // ── Contacts ──────────────────────────────────────────
 
 export async function getContacts() {
-    if (!await checkAuth()) return [];
-    return storage.getContacts();
+    const userEmail = await checkAuth();
+    if (!userEmail) return [];
+    return storage.getContacts(userEmail);
 }
 
 export async function createContact(formData: FormData) {
-    if (!await checkAuth()) throw new Error('Unauthorized');
+    const userEmail = await checkAuth();
+    if (!userEmail) throw new Error('Unauthorized');
 
     const name = formData.get('name') as string;
     const email = formData.get('email') as string;
@@ -35,26 +37,29 @@ export async function createContact(formData: FormData) {
         createdAt: new Date().toISOString(),
     };
 
-    await storage.saveContact(newContact);
+    await storage.saveContact(userEmail, newContact);
     revalidatePath('/dashboard');
 }
 
 export async function deleteContact(contactId: string) {
-    if (!await checkAuth()) throw new Error('Unauthorized');
+    const userEmail = await checkAuth();
+    if (!userEmail) throw new Error('Unauthorized');
 
-    await storage.deleteContact(contactId);
+    await storage.deleteContact(userEmail, contactId);
     revalidatePath('/dashboard');
 }
 
 // ── Entries ───────────────────────────────────────────
 
 export async function getEntries() {
-    if (!await checkAuth()) return [];
-    return storage.getEntries();
+    const userEmail = await checkAuth();
+    if (!userEmail) return [];
+    return storage.getEntries(userEmail);
 }
 
 export async function createEntry(formData: FormData) {
-    if (!await checkAuth()) throw new Error('Unauthorized');
+    const userEmail = await checkAuth();
+    if (!userEmail) throw new Error('Unauthorized');
 
     const content = formData.get('content') as string;
     const contactIdsStr = formData.get('contactIds') as string;
@@ -69,13 +74,14 @@ export async function createEntry(formData: FormData) {
         ? tagsStr.split(',').map(t => t.trim()).filter(Boolean)
         : [];
 
-    await storage.addEntry(content, contactIds, tags);
+    await storage.addEntry(userEmail, content, contactIds, tags);
     revalidatePath('/dashboard');
 }
 
 export async function deleteEntry(entryId: string) {
-    if (!await checkAuth()) throw new Error('Unauthorized');
+    const userEmail = await checkAuth();
+    if (!userEmail) throw new Error('Unauthorized');
 
-    await storage.deleteEntry(entryId);
+    await storage.deleteEntry(userEmail, entryId);
     revalidatePath('/dashboard');
 }
