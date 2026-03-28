@@ -26,14 +26,19 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
+# Install su-exec for privilege dropping in entrypoint
+RUN apk add --no-cache su-exec
+
 # Create data directory and give nextjs user ownership
 RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
 
-USER nextjs
+# Copy entrypoint (runs as root to fix volume perms, then drops to nextjs)
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh
 
 EXPOSE 3000
 
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["node", "server.js"]
+CMD ["./entrypoint.sh"]
