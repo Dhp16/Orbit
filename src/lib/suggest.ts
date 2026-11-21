@@ -1,4 +1,4 @@
-import { Contact, Entry } from '@/types';
+import type { Contact, Entry } from '@/types';
 
 // Lightweight, offline tagging: suggest people and *existing* topics that the text mentions.
 // No new topics are invented, so the topic list stays small.
@@ -9,18 +9,23 @@ const normalise = (s: string) =>
         .replace(/[^a-z0-9à-ÿ]+/g, ' ')
         .trim();
 
-// Rough stem so "running"/"runs"/"ran" style variants still match a topic like "run"
-const stem = (w: string) =>
-    w.length > 4 ? w.replace(/(ings|ing|ers|er|ies|es|ed|s)$/, '') : w;
+// Does a word in the text count as this topic word? Exact, or a simple plural/-ing/-ed form of it
+const sameWord = (word: string, topic: string) => {
+    if (word === topic) return true;
+    if (topic.length < 3) return false;
+    const base = topic.replace(/e$/, '');
+    return [`${topic}s`, `${topic}es`, `${base}ing`, `${base}ed`, `${topic}ing`, `${topic}ed`].includes(word)
+        || (topic.endsWith('y') && word === `${topic.slice(0, -1)}ies`);
+};
 
 export type PersonSuggestion = { id: string; sure: boolean }; // sure = pre-selected; otherwise one tap to add
-export type Suggestions = { people: PersonSuggestion[]; tags: string[] };
+// tags: the topic is written in the text (pre-selected). likelyTags: learned from past entries (one tap to add).
+export type Suggestions = { people: PersonSuggestion[]; tags: string[]; likelyTags: string[] };
 
-export function suggestTags(text: string, contacts: Contact[], tags: string[]): Suggestions {
+export function suggestTags(text: string, contacts: Contact[], tags: string[], learned?: TopicKeywords): Suggestions {
     const norm = ` ${normalise(text)} `;
-    if (norm.trim().length < 2) return { people: [], tags: [] };
+    if (norm.trim().length < 2) return { people: [], tags: [], likelyTags: [] };
     const words = norm.trim().split(' ');
-    const stems = new Set(words.map(stem));
 
     // People: full name is a sure match; a first name alone is sure only if nobody else shares it
     const firstNameCount = new Map<string, number>();
@@ -44,11 +49,58 @@ export function suggestTags(text: string, contacts: Contact[], tags: string[]): 
         const t = normalise(tag.replace(/[-_]/g, ' '));
         if (!t) return false;
         if (norm.includes(` ${t} `)) return true;
-        const parts = t.split(' ');
-        return parts.every((p) => stems.has(stem(p)));
+        // Multi-word topics need every word, in any form
+        return t.split(' ').every((part) => words.some((w) => sameWord(w, part)));
     });
 
-    return { people, tags: matchedTags };
+    // Topics implied by words that, in past entries, nearly always came with that topic
+    const likely = new Map<string, number>();
+    if (learned) for (const w of new Set(words)) {
+        for (const tag of learned.get(w) ?? []) if (!matchedTags.includes(tag)) likely.set(tag, (likely.get(tag) ?? 0) + 1);
+    }
+    const likelyTags = [...likely].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t);
+
+    return { people, tags: matchedTags, likelyTags };
+}
+
+// ── Learning topics from past entries ──────────────────
+
+export type TopicKeywords = Map<string, string[]>; // word -> topics it signals
+
+const COMMON = new Set(
+    ('the a an and or but to of in on at for with from by about as is was were be been are it its this that these those ' +
+        'i me my we our you your he she they them his her their there here then than so very just really also too not no ' +
+        'had has have do did done get got go went going come came make made take took said say says one two three new old ' +
+        'good great nice lot lots some more most all any each next last week today tomorrow yesterday time day night ' +
+        'morning evening after before back over up down out off into still need needs want wants will would could should ' +
+        'can like think thinking talked talk chat call quick long little big catch caught met meet asked told ' +
+        'sent send sending plan plans planning thing things stuff bit maybe sure fine okay well again first final also').split(' '),
+);
+
+// A word teaches a topic if it showed up in at least `minEntries` entries and at least `minShare` of those had the topic.
+// People's names are skipped so "Liam" doesn't become a topic signal.
+export function learnTopicKeywords(entries: Entry[], contacts: Contact[], minEntries = 3, minShare = 0.75): TopicKeywords {
+    const names = new Set(contacts.flatMap((c) => normalise(c.name).split(' ')));
+    const seen = new Map<string, number>();
+    const withTag = new Map<string, Map<string, number>>();
+    for (const e of entries) {
+        const words = new Set(normalise(e.content).split(' ').filter((w) => w.length >= 4 && !COMMON.has(w) && !names.has(w) && !/^\d+$/.test(w)));
+        for (const w of words) {
+            seen.set(w, (seen.get(w) ?? 0) + 1);
+            for (const t of e.tags) {
+                const m = withTag.get(w) ?? new Map<string, number>();
+                m.set(t, (m.get(t) ?? 0) + 1);
+                withTag.set(w, m);
+            }
+        }
+    }
+    const out: TopicKeywords = new Map();
+    for (const [w, n] of seen) {
+        if (n < minEntries) continue;
+        const signals = [...(withTag.get(w) ?? [])].filter(([, k]) => k / n >= minShare).map(([t]) => t);
+        if (signals.length) out.set(w, signals);
+    }
+    return out;
 }
 
 // ── Summaries for the Read tab ─────────────────────────
@@ -88,7 +140,11 @@ export function summarise(entries: Entry[], contacts: Contact[], exclude: { cont
         last: sorted[0]?.createdAt ?? null,
         first: sorted.at(-1)?.createdAt ?? null,
         bullets: sorted.slice(0, limit).map((e) => ({ id: e.id, text: firstSentence(e.content), createdAt: e.createdAt })),
-        alsoMentioned: [...together].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([label, count]) => ({ label, count })),
+        // Most often first; on a tie, people before topics, then A–Z
+        alsoMentioned: [...together]
+            .sort((a, b) => b[1] - a[1] || Number(a[0].startsWith('#')) - Number(b[0].startsWith('#')) || a[0].localeCompare(b[0]))
+            .slice(0, 4)
+            .map(([label, count]) => ({ label, count })),
     };
 }
 
@@ -110,6 +166,12 @@ const NOT_NAMES = new Set(
     ('monday tuesday wednesday thursday friday saturday sunday january february march april may june july august ' +
         'september october november december today tomorrow yesterday i im the a an we they he she it this that ' +
         'paris london google zoom slack uk us ok christmas easter').split(' '),
+);
+
+// Words that often start a sentence in a note, right before a name ("Met Pablo Hernandez…")
+const STARTERS = new Set(
+    ('met meet saw see called call rang texted emailed messaged spoke talked chatted asked told visited introduced ' +
+        'lunch dinner coffee drinks breakfast with and also then just had dear thanks new happy').split(' '),
 );
 
 // Someone mentioned by name who isn't in Orbit: a Google contact if one matches, otherwise any
@@ -141,11 +203,17 @@ export function suggestNewPeople(text: string, contacts: Contact[], directory: D
             push({ ...d, source: 'google', sure: false });
     }
 
-    // Anything that looks like a full name in the text itself
-    for (const m of text.matchAll(/\b([A-ZÀ-Ý][a-zà-ÿ'’-]+)\s+([A-ZÀ-Ý][a-zà-ÿ'’-]+)\b/g)) {
-        const [first, last] = [m[1], m[2]];
+    // Anything that looks like a full name in the text itself: a run of capitalised words, minus a
+    // sentence-starting word like "Met" or "Called" in front of it
+    // A capitalised word with lower-case letters (Pablo, Jean-Luc), or O'Brien-style; not PB, UK, Q1
+    const WORD = "[A-ZÀ-Ý](?:[a-zà-ÿ]+(?:['’-][A-ZÀ-Ýa-zà-ÿ]+)*|['’][A-ZÀ-Ý][a-zà-ÿ]+)";
+    for (const m of text.matchAll(new RegExp(`\\b${WORD}(?:\\s+${WORD})+`, 'g'))) {
+        let run = m[0].split(/\s+/);
+        while (run.length && (STARTERS.has(run[0].toLowerCase()) || NOT_NAMES.has(run[0].toLowerCase()))) run = run.slice(1);
+        if (run.length < 2) continue;
+        const [first, last] = [run[0], run[1].replace(/[’']s$/, '')];
         if (NOT_NAMES.has(first.toLowerCase()) || NOT_NAMES.has(last.toLowerCase())) continue;
-        const name = `${first} ${last}`.replace(/[’']s$/, '');
+        const name = `${first} ${last}`;
         if (directory.some((d) => normalise(d.name) === normalise(name))) continue; // already offered above
         push({ name, source: 'text', sure: false });
     }

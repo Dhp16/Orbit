@@ -1,14 +1,14 @@
 'use client'
 
 import { useMemo, useRef, useState } from 'react';
-import { Contact } from '@/types';
+import { Contact, Entry } from '@/types';
 import { createEntry } from '@/lib/actions';
-import { DirectoryPerson, suggestNewPeople, suggestTags } from '@/lib/suggest';
+import { DirectoryPerson, learnTopicKeywords, suggestNewPeople, suggestTags } from '@/lib/suggest';
 
 // Type (or dictate) and press Save. People and existing topics mentioned in the text are tagged
 // automatically; tap a chip to remove it, or tap a faded one to add it. Someone who isn't in Orbit
 // yet is offered as "+ Add Name" (from Google Contacts if they're there).
-export function NewEntryForm({ contacts, allTags, directory }: { contacts: Contact[]; allTags: string[]; directory: DirectoryPerson[] }) {
+export function NewEntryForm({ contacts, allTags, directory, entries }: { contacts: Contact[]; allTags: string[]; directory: DirectoryPerson[]; entries: Entry[] }) {
     const [content, setContent] = useState('');
     const [removed, setRemoved] = useState<Set<string>>(new Set()); // "p:id" / "t:tag" / "n:name" the user took off
     const [added, setAdded] = useState<Set<string>>(new Set());     // added by hand or by tapping a faded chip
@@ -17,7 +17,8 @@ export function NewEntryForm({ contacts, allTags, directory }: { contacts: Conta
     const [saving, setSaving] = useState(false);
     const formRef = useRef<HTMLFormElement>(null);
 
-    const suggestions = useMemo(() => suggestTags(content, contacts, allTags), [content, contacts, allTags]);
+    const learned = useMemo(() => learnTopicKeywords(entries, contacts), [entries, contacts]);
+    const suggestions = useMemo(() => suggestTags(content, contacts, allTags, learned), [content, contacts, allTags, learned]);
     const newPeople = useMemo(() => suggestNewPeople(content, contacts, directory), [content, contacts, directory]);
 
     const isOn = (key: string, auto: boolean) => added.has(key) || (auto && !removed.has(key));
@@ -35,8 +36,9 @@ export function NewEntryForm({ contacts, allTags, directory }: { contacts: Conta
     ];
     const tagChips = [
         ...suggestions.tags.map((t) => ({ tag: t, auto: true })),
+        ...suggestions.likelyTags.map((t) => ({ tag: t, auto: false })), // faded: one tap to add
         ...[...added].filter((k) => k.startsWith('t:')).map((k) => k.slice(2))
-            .filter((t) => !suggestions.tags.includes(t)).map((t) => ({ tag: t, auto: false })),
+            .filter((t) => !suggestions.tags.includes(t) && !suggestions.likelyTags.includes(t)).map((t) => ({ tag: t, auto: false })),
     ];
     const selectedPeople = personChips.filter((c) => isOn(`p:${c.id}`, c.auto)).map((c) => c.id);
     const selectedTags = tagChips.filter((c) => isOn(`t:${c.tag}`, c.auto)).map((c) => c.tag);

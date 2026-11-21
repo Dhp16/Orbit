@@ -120,7 +120,7 @@ export function MobileDashboard({ contacts, entries, allTags, directory }: Props
                 {activeTab === 'write' && (
                     <>
                         <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-                            <NewEntryForm contacts={contacts} allTags={allTags} directory={directory} />
+                            <NewEntryForm contacts={contacts} allTags={allTags} directory={directory} entries={entries} />
                         </div>
 
                         <details className="bg-white/5 border border-white/10 rounded-2xl p-5 group">
