@@ -1,18 +1,22 @@
 'use client'
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { Contact, Entry } from '@/types';
 import { NewEntryForm } from './NewEntryForm';
 import { EntryList } from './EntryList';
 import { createContact } from '@/lib/actions';
+import { SummaryCard } from './SummaryCard';
+import { DirectoryPerson } from '@/lib/suggest';
 
 interface Props {
     contacts: Contact[];
     entries: Entry[];
     allTags: string[];
+    directory: DirectoryPerson[];
 }
 
-export function MobileDashboard({ contacts, entries, allTags }: Props) {
+export function MobileDashboard({ contacts, entries, allTags, directory }: Props) {
+    const listRef = useRef<HTMLDivElement>(null);
     const [activeTab, setActiveTab] = useState<'write' | 'read'>('write');
 
     // Search / filter state
@@ -68,6 +72,21 @@ export function MobileDashboard({ contacts, entries, allTags }: Props) {
 
     const hasFilters = filterContactIds.length > 0 || filterTags.length > 0 || searchQuery.trim();
 
+    // People and topics from the latest entries, most recent first
+    const recent = useMemo(() => {
+        const out: { key: string; kind: 'person' | 'topic'; id: string; label: string }[] = [];
+        const seen = new Set<string>();
+        for (const e of [...entries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
+            for (const id of e.contactIds) {
+                const c = contacts.find(x => x.id === id);
+                if (c && !seen.has(`p${id}`)) { seen.add(`p${id}`); out.push({ key: `p${id}`, kind: 'person', id, label: c.name }); }
+            }
+            for (const t of e.tags) if (!seen.has(`t${t}`)) { seen.add(`t${t}`); out.push({ key: `t${t}`, kind: 'topic', id: t, label: t }); }
+            if (out.length >= 12) break;
+        }
+        return out.slice(0, 12);
+    }, [entries, contacts]);
+
     return (
         <div className="flex flex-col min-h-[calc(100vh-64px)]">
             {/* Tab Bar */}
@@ -101,16 +120,14 @@ export function MobileDashboard({ contacts, entries, allTags }: Props) {
                 {activeTab === 'write' && (
                     <>
                         <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-                            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                                <span className="text-purple-400">✦</span> New Entry
-                            </h2>
-                            <NewEntryForm contacts={contacts} allTags={allTags} />
+                            <NewEntryForm contacts={contacts} allTags={allTags} directory={directory} />
                         </div>
 
-                        <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-                            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                                <span className="text-purple-400">+</span> New Person
-                            </h2>
+                        <details className="bg-white/5 border border-white/10 rounded-2xl p-5 group">
+                            <summary className="text-sm text-gray-400 cursor-pointer list-none flex items-center gap-2">
+                                <span className="text-purple-400">+</span> Add a person by hand
+                            </summary>
+                            <div className="pt-4">
                             <form action={createContact} className="space-y-4">
                                 <div>
                                     <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">Name</label>
@@ -124,7 +141,8 @@ export function MobileDashboard({ contacts, entries, allTags }: Props) {
                                     Add to Orbit
                                 </button>
                             </form>
-                        </div>
+                            </div>
+                        </details>
                     </>
                 )}
 
@@ -165,11 +183,10 @@ export function MobileDashboard({ contacts, entries, allTags }: Props) {
                                 <div className="relative flex items-center">
                                     <input
                                         type="text"
-                                        placeholder={hasFilters ? 'Add another filter or search...' : 'Search entries, @people, #tags...'}
+                                        placeholder={hasFilters ? 'Add another filter or search…' : 'Search a topic or a person…'}
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
                                         className="w-full bg-transparent px-4 py-3 text-sm text-white focus:outline-none"
-                                        autoFocus
                                     />
                                     {searchQuery && (
                                         <button
@@ -224,7 +241,46 @@ export function MobileDashboard({ contacts, entries, allTags }: Props) {
                             </div>
                         )}
 
-                        <EntryList entries={filteredEntries} contacts={contacts} />
+                        {/* One person or topic picked: a quick summary of the latest entries */}
+                        {!searchQuery.trim() && filterContactIds.length + filterTags.length === 1 && (() => {
+                            const contactId = filterContactIds[0];
+                            const tag = filterTags[0];
+                            const title = contactId ? contacts.find(c => c.id === contactId)?.name ?? '' : tag;
+                            return (
+                                <SummaryCard
+                                    title={title}
+                                    kind={contactId ? 'person' : 'topic'}
+                                    entries={filteredEntries}
+                                    contacts={contacts}
+                                    exclude={{ contactId, tag }}
+                                    onSeeAll={() => listRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                                    onPick={(label) => {
+                                        if (label.startsWith('#')) { setFilterContactIds([]); setFilterTags([label.slice(1)]); }
+                                        else { const c = contacts.find(x => x.name === label); if (c) { setFilterTags([]); setFilterContactIds([c.id]); } }
+                                    }}
+                                />
+                            );
+                        })()}
+
+                        {/* Nothing picked yet: who and what has come up lately, one tap to catch up */}
+                        {!hasFilters && (
+                            <div className="space-y-2">
+                                <p className="text-xs uppercase tracking-wider text-gray-500">Recently mentioned</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {recent.map(r => (
+                                        <button key={r.key} type="button"
+                                            onClick={() => r.kind === 'person' ? selectContact(r.id) : selectTag(r.id)}
+                                            className={`px-2.5 py-1 text-xs rounded-full border ${r.kind === 'person' ? 'bg-blue-500/10 text-blue-200 border-blue-500/20' : 'bg-purple-500/10 text-purple-200 border-purple-500/20'}`}>
+                                            {r.kind === 'person' ? '@' : '#'}{r.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <div ref={listRef} className="scroll-mt-32 space-y-6">
+                            <EntryList entries={filteredEntries} contacts={contacts} />
+                        </div>
                     </>
                 )}
             </div>

@@ -1,7 +1,7 @@
 
 import { auth, signOut } from "@/auth"
 import { redirect } from "next/navigation"
-import { getContacts, getEntries } from "@/lib/actions"
+import { getContacts, getDirectory, getEntries } from "@/lib/actions"
 import { MobileDashboard } from "@/components/MobileDashboard"
 
 export default async function DashboardPage() {
@@ -11,6 +11,7 @@ export default async function DashboardPage() {
 
     const contacts = await getContacts()
     const entries = await getEntries()
+    const directory = await getDirectory()
     const allTags = [...new Set(entries.flatMap(e => e.tags))].sort()
 
     return (
@@ -46,7 +47,7 @@ export default async function DashboardPage() {
                 </div>
             </nav>
 
-            <MobileDashboard contacts={contacts} entries={entries} allTags={allTags} />
+            <MobileDashboard contacts={contacts} entries={entries} allTags={allTags} directory={directory} />
         </div>
     )
 }

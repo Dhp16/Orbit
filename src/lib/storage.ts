@@ -66,6 +66,16 @@ export const storage = {
         await writeData(userEmail, data);
     },
 
+    // ── Directory (people you know, for suggestions only) ──
+    getDirectory: async (userEmail: string): Promise<{ name: string; email?: string }[]> => {
+        try {
+            const raw = await fs.readFile(path.join(DATA_DIR, `${userEmail}.directory.json`), 'utf-8');
+            return JSON.parse(raw);
+        } catch {
+            return [];
+        }
+    },
+
     // ── Entries ───────────────────────────────────────────
     getEntries: async (userEmail: string): Promise<Entry[]> => {
         const data = await readData(userEmail);

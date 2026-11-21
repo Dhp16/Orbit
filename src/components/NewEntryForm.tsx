@@ -1,220 +1,176 @@
-
 'use client'
 
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Contact } from '@/types';
 import { createEntry } from '@/lib/actions';
+import { DirectoryPerson, suggestNewPeople, suggestTags } from '@/lib/suggest';
 
-export function NewEntryForm({ contacts, allTags }: { contacts: Contact[]; allTags: string[] }) {
-    const [selectedPeople, setSelectedPeople] = useState<string[]>([]);
-    const [showPeoplePicker, setShowPeoplePicker] = useState(false);
-    const [peopleSearch, setPeopleSearch] = useState('');
+// Type (or dictate) and press Save. People and existing topics mentioned in the text are tagged
+// automatically; tap a chip to remove it, or tap a faded one to add it. Someone who isn't in Orbit
+// yet is offered as "+ Add Name" (from Google Contacts if they're there).
+export function NewEntryForm({ contacts, allTags, directory }: { contacts: Contact[]; allTags: string[]; directory: DirectoryPerson[] }) {
+    const [content, setContent] = useState('');
+    const [removed, setRemoved] = useState<Set<string>>(new Set()); // "p:id" / "t:tag" / "n:name" the user took off
+    const [added, setAdded] = useState<Set<string>>(new Set());     // added by hand or by tapping a faded chip
+    const [picker, setPicker] = useState<'none' | 'person' | 'topic'>('none');
+    const [pickerSearch, setPickerSearch] = useState('');
+    const [saving, setSaving] = useState(false);
+    const formRef = useRef<HTMLFormElement>(null);
 
-    const [selectedTags, setSelectedTags] = useState<string[]>([]);
-    const [showTagPicker, setShowTagPicker] = useState(false);
-    const [tagSearch, setTagSearch] = useState('');
+    const suggestions = useMemo(() => suggestTags(content, contacts, allTags), [content, contacts, allTags]);
+    const newPeople = useMemo(() => suggestNewPeople(content, contacts, directory), [content, contacts, directory]);
 
-    const toggleTag = (tag: string) => {
-        setSelectedTags(prev =>
-            prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-        );
+    const isOn = (key: string, auto: boolean) => added.has(key) || (auto && !removed.has(key));
+    const toggle = (key: string, auto: boolean) => {
+        const on = isOn(key, auto);
+        setAdded((s) => { const n = new Set(s); if (on) n.delete(key); else n.add(key); return n; });
+        setRemoved((s) => { const n = new Set(s); if (on && auto) n.add(key); else n.delete(key); return n; });
     };
 
-    const addNewTag = () => {
-        const trimmed = tagSearch.trim().toLowerCase();
-        if (trimmed && !selectedTags.includes(trimmed)) {
-            setSelectedTags(prev => [...prev, trimmed]);
-        }
-        setTagSearch('');
+    // Chips: suggestions first, then anything added by hand that the text doesn't mention
+    const personChips = [
+        ...suggestions.people.map((p) => ({ id: p.id, auto: p.sure })),
+        ...[...added].filter((k) => k.startsWith('p:')).map((k) => k.slice(2))
+            .filter((id) => !suggestions.people.some((p) => p.id === id)).map((id) => ({ id, auto: false })),
+    ];
+    const tagChips = [
+        ...suggestions.tags.map((t) => ({ tag: t, auto: true })),
+        ...[...added].filter((k) => k.startsWith('t:')).map((k) => k.slice(2))
+            .filter((t) => !suggestions.tags.includes(t)).map((t) => ({ tag: t, auto: false })),
+    ];
+    const selectedPeople = personChips.filter((c) => isOn(`p:${c.id}`, c.auto)).map((c) => c.id);
+    const selectedTags = tagChips.filter((c) => isOn(`t:${c.tag}`, c.auto)).map((c) => c.tag);
+    // New people are never added without a tap
+    const peopleToCreate = newPeople.filter((p) => added.has(`n:${p.name}`));
+
+    const q = pickerSearch.trim().toLowerCase();
+    const pickablePeople = contacts.filter((c) => !selectedPeople.includes(c.id) && (!q || c.name.toLowerCase().includes(q)));
+    const pickableTags = allTags.filter((t) => !selectedTags.includes(t) && (!q || t.includes(q)));
+    const canCreateTag = picker === 'topic' && q && !allTags.includes(q) && !selectedTags.includes(q);
+
+    const addByHand = (key: string) => {
+        setAdded((s) => new Set(s).add(key));
+        setRemoved((s) => { const n = new Set(s); n.delete(key); return n; });
+        setPicker('none');
+        setPickerSearch('');
     };
 
-    const availableTags = allTags.filter(t =>
-        !selectedTags.includes(t) &&
-        (!tagSearch.trim() || t.toLowerCase().includes(tagSearch.toLowerCase()))
-    );
-
-    const showAddNew = tagSearch.trim() &&
-        !allTags.some(t => t.toLowerCase() === tagSearch.trim().toLowerCase()) &&
-        !selectedTags.includes(tagSearch.trim().toLowerCase());
-
-    const togglePerson = (id: string) => {
-        setSelectedPeople(prev =>
-            prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]
-        );
+    const reset = () => {
+        setContent('');
+        setAdded(new Set());
+        setRemoved(new Set());
+        setPicker('none');
+        setPickerSearch('');
+        formRef.current?.reset();
     };
 
-    const availableContacts = contacts.filter(c =>
-        !selectedPeople.includes(c.id) &&
-        (!peopleSearch.trim() || c.name.toLowerCase().includes(peopleSearch.toLowerCase()))
-    );
+    const chip = 'px-2.5 py-1 text-xs rounded-full border flex items-center gap-1 transition-colors';
+    const nothingSpotted = personChips.length === 0 && tagChips.length === 0 && newPeople.length === 0;
 
     return (
         <form
+            ref={formRef}
             action={async (formData: FormData) => {
+                setSaving(true);
                 formData.set('contactIds', selectedPeople.join(','));
                 formData.set('tags', selectedTags.join(','));
+                formData.set('newPeople', JSON.stringify(peopleToCreate.map(({ name, email }) => ({ name, email }))));
                 await createEntry(formData);
-                setSelectedPeople([]);
-                setShowPeoplePicker(false);
-                setPeopleSearch('');
-                setSelectedTags([]);
-                setShowTagPicker(false);
-                setTagSearch('');
-                // Reset form fields
-                const form = document.getElementById('entry-form') as HTMLFormElement;
-                form?.reset();
+                reset();
+                setSaving(false);
             }}
-            id="entry-form"
-            className="space-y-4"
+            className="space-y-3"
         >
-            <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
-                    What&apos;s on your mind?
-                </label>
-                <textarea
-                    name="content"
-                    required
-                    rows={3}
-                    className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all resize-none"
-                    placeholder="Met with Sarah about the Q2 roadmap..."
-                />
+            <textarea
+                name="content"
+                required
+                rows={6}
+                autoFocus
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all resize-none"
+                placeholder="What happened? e.g. Coffee with Sarah, she's starting the new job in March…"
+            />
+
+            {/* Auto tags */}
+            <div className="min-h-8 flex flex-wrap items-center gap-1.5">
+                {personChips.map(({ id, auto }) => {
+                    const person = contacts.find((c) => c.id === id);
+                    if (!person) return null;
+                    const on = isOn(`p:${id}`, auto);
+                    return (
+                        <button key={`p${id}`} type="button" onClick={() => toggle(`p:${id}`, auto)}
+                            className={`${chip} ${on ? 'bg-blue-500/20 text-blue-200 border-blue-500/30' : 'border-dashed border-blue-500/30 text-blue-300/60'}`}>
+                            <span className="text-blue-400">{on ? '@' : '+'}</span>{person.name}{on && <span className="text-blue-400/70 ml-0.5">×</span>}
+                        </button>
+                    );
+                })}
+                {newPeople.map((p) => {
+                    const on = added.has(`n:${p.name}`);
+                    return (
+                        <button key={`n${p.name}`} type="button" onClick={() => toggle(`n:${p.name}`, false)}
+                            className={`${chip} ${on ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/30' : 'border-dashed border-emerald-500/40 text-emerald-300/80'}`}
+                            title={p.source === 'google' ? 'From your Google contacts' : 'Not in Orbit yet'}>
+                            <span className="text-emerald-400">{on ? '@' : '+ Add'}</span>{p.name}
+                            {p.source === 'google' && !on && <span className="text-[10px] text-emerald-400/70 ml-0.5">G</span>}
+                            {on && <span className="text-emerald-400/70 ml-0.5">new ×</span>}
+                        </button>
+                    );
+                })}
+                {tagChips.map(({ tag, auto }) => {
+                    const on = isOn(`t:${tag}`, auto);
+                    return (
+                        <button key={`t${tag}`} type="button" onClick={() => toggle(`t:${tag}`, auto)}
+                            className={`${chip} ${on ? 'bg-purple-500/20 text-purple-200 border-purple-500/30' : 'border-dashed border-purple-500/30 text-purple-300/60'}`}>
+                            <span className="text-purple-400">#</span>{tag}{on && <span className="text-purple-400/70 ml-0.5">×</span>}
+                        </button>
+                    );
+                })}
+                {nothingSpotted && (
+                    <span className="text-xs text-gray-600">{content.trim() ? 'No people or topics spotted' : 'People and topics are tagged as you type'}</span>
+                )}
+                <span className="ml-auto flex gap-3 text-xs text-gray-500">
+                    <button type="button" onClick={() => { setPicker(picker === 'person' ? 'none' : 'person'); setPickerSearch(''); }} className="hover:text-gray-300">+ person</button>
+                    <button type="button" onClick={() => { setPicker(picker === 'topic' ? 'none' : 'topic'); setPickerSearch(''); }} className="hover:text-gray-300">+ topic</button>
+                </span>
             </div>
 
-            {/* People Tagger */}
-            <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
-                    Tag People
-                </label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                    {selectedPeople.map(id => {
-                        const person = contacts.find(c => c.id === id);
-                        if (!person) return null;
-                        return (
-                            <span
-                                key={id}
-                                className="px-2.5 py-1 bg-blue-500/20 text-blue-200 text-xs rounded-full border border-blue-500/20 flex items-center gap-1 cursor-pointer hover:bg-blue-500/30 transition-colors"
-                                onClick={() => togglePerson(id)}
-                            >
-                                <span className="text-blue-400">@</span>{person.name}
-                                <span className="text-blue-400 ml-1">×</span>
-                            </span>
-                        );
-                    })}
-                </div>
-                {contacts.length > 0 && (
-                    <button
-                        type="button"
-                        onClick={() => { setShowPeoplePicker(!showPeoplePicker); setPeopleSearch(''); }}
-                        className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-                    >
-                        {showPeoplePicker ? 'Hide' : '+ Tag someone'}
-                    </button>
-                )}
-                {showPeoplePicker && (
-                    <div className="mt-2 bg-black/50 border border-white/10 rounded-xl overflow-hidden">
-                        <div className="p-2 border-b border-white/5">
-                            <input
-                                type="text"
-                                value={peopleSearch}
-                                onChange={(e) => setPeopleSearch(e.target.value)}
-                                placeholder="Search people..."
-                                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500/50"
-                                autoFocus
-                            />
-                        </div>
-                        <div className="p-2 max-h-32 overflow-y-auto space-y-1">
-                            {availableContacts.map(contact => (
-                                <button
-                                    key={contact.id}
-                                    type="button"
-                                    onClick={() => togglePerson(contact.id)}
-                                    className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-white/10 rounded-lg transition-colors"
-                                >
-                                    {contact.name}
+            {picker !== 'none' && (
+                <div className="bg-black/50 border border-white/10 rounded-xl overflow-hidden">
+                    <div className="p-2 border-b border-white/5">
+                        <input
+                            type="text"
+                            value={pickerSearch}
+                            onChange={(e) => setPickerSearch(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (canCreateTag) addByHand(`t:${q}`); } }}
+                            placeholder={picker === 'person' ? 'Search people…' : 'Search or create a topic…'}
+                            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+                            autoFocus
+                        />
+                    </div>
+                    <div className="p-2 max-h-40 overflow-y-auto space-y-1">
+                        {picker === 'topic' && canCreateTag && (
+                            <button type="button" onClick={() => addByHand(`t:${q}`)} className="w-full text-left px-3 py-2 text-sm text-purple-300 hover:bg-white/10 rounded-lg">
+                                + Create “{q}”
+                            </button>
+                        )}
+                        {(picker === 'person' ? pickablePeople.map((c) => ({ key: `p:${c.id}`, label: c.name })) : pickableTags.map((t) => ({ key: `t:${t}`, label: `#${t}` })))
+                            .slice(0, 30)
+                            .map((o) => (
+                                <button key={o.key} type="button" onClick={() => addByHand(o.key)} className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-white/10 rounded-lg">
+                                    {o.label}
                                 </button>
                             ))}
-                            {availableContacts.length === 0 && (
-                                <p className="text-xs text-gray-600 px-3 py-2">
-                                    {peopleSearch ? 'No matches' : 'Everyone is tagged'}
-                                </p>
-                            )}
-                        </div>
                     </div>
-                )}
-            </div>
-
-            {/* Tags Picker */}
-            <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
-                    Tags
-                </label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                    {selectedTags.map(tag => (
-                        <span
-                            key={tag}
-                            className="px-2.5 py-1 bg-purple-500/20 text-purple-200 text-xs rounded-full border border-purple-500/20 flex items-center gap-1 cursor-pointer hover:bg-purple-500/30 transition-colors"
-                            onClick={() => toggleTag(tag)}
-                        >
-                            <span className="text-purple-400">#</span>{tag}
-                            <span className="text-purple-400 ml-1">×</span>
-                        </span>
-                    ))}
                 </div>
-                <button
-                    type="button"
-                    onClick={() => { setShowTagPicker(!showTagPicker); setTagSearch(''); }}
-                    className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-                >
-                    {showTagPicker ? 'Hide' : '+ Add tag'}
-                </button>
-                {showTagPicker && (
-                    <div className="mt-2 bg-black/50 border border-white/10 rounded-xl overflow-hidden">
-                        <div className="p-2 border-b border-white/5">
-                            <input
-                                type="text"
-                                value={tagSearch}
-                                onChange={(e) => setTagSearch(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addNewTag(); } }}
-                                placeholder="Search or create tag..."
-                                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500/50"
-                                autoFocus
-                            />
-                        </div>
-                        <div className="p-2 max-h-32 overflow-y-auto space-y-1">
-                            {showAddNew && (
-                                <button
-                                    type="button"
-                                    onClick={addNewTag}
-                                    className="w-full text-left px-3 py-2 text-sm text-purple-300 hover:bg-white/10 rounded-lg transition-colors"
-                                >
-                                    + Create &ldquo;{tagSearch.trim()}&rdquo;
-                                </button>
-                            )}
-                            {availableTags.map(tag => (
-                                <button
-                                    key={tag}
-                                    type="button"
-                                    onClick={() => toggleTag(tag)}
-                                    className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-white/10 rounded-lg transition-colors"
-                                >
-                                    #{tag}
-                                </button>
-                            ))}
-                            {availableTags.length === 0 && !showAddNew && (
-                                <p className="text-xs text-gray-600 px-3 py-2">
-                                    {tagSearch ? 'No matches' : 'All tags selected'}
-                                </p>
-                            )}
-                        </div>
-                    </div>
-                )}
-            </div>
+            )}
 
             <button
                 type="submit"
-                className="w-full py-3 bg-white text-black font-medium rounded-xl hover:bg-gray-200 transition-colors"
+                disabled={saving || !content.trim()}
+                className="w-full py-3.5 bg-white text-black font-semibold rounded-xl hover:bg-gray-200 transition-colors disabled:opacity-40"
             >
-                Add Entry
+                {saving ? 'Saving…' : 'Save'}
             </button>
         </form>
     );
